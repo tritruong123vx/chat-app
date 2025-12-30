@@ -53,242 +53,128 @@ const ChatPage = () => {
     message: '', 
     severity: 'info' 
   });
-  
-  /* ================= HANDLERS ================= */
-  const showNotification = useCallback((message, severity = 'info') => {
-    setNotification({ open: true, message, severity });
-  }, []);
+ /* ================= HANDLERS ================= */
+const showNotification = useCallback((message, severity = 'info') => {
+  setNotification({ open: true, message, severity });
+}, []);
 
-  const handleCloseNotification = useCallback(() => {
-    setNotification(prev => ({ ...prev, open: false }));
-  }, []);
+const handleCloseNotification = useCallback(() => {
+  setNotification(prev => ({ ...prev, open: false }));
+}, []);
 
-  const handleLogout = useCallback(async () => {
+const handleLogout = useCallback(async () => {
+  try {
+    await authService.logout();
+    navigate('/login');
+  } catch (error) {
+    console.error('Logout error:', error);
+  }
+}, [navigate]);
+
+const handleKeyDown = useCallback((e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}, []);
+
+/* ================= API FUNCTIONS ================= */
+const fetchContacts = useCallback(async () => {
+  try {
+    console.log('📡 Fetching contacts from AWS...');
+    const data = await chatService.getContacts();
+    setUsers(data || []);
+    console.log(`✅ Loaded ${data?.length || 0} contacts`);
+  } catch (error) {
+    console.error('Error fetching contacts:', error);
+    showNotification('Không thể tải contacts từ AWS', 'error');
+  }
+}, [showNotification]);
+
+
+/* ================= POLLING (thay cho WebSocket) ================= */
+// useEffect(() => {
+//   fetchOnlineUsers();
+//   const interval = setInterval(() => {
+//     fetchOnlineUsers();
+//   }, 5000);
+//   return () => clearInterval(interval);
+// }, [fetchOnlineUsers]);
+
+/* ================= SEND MESSAGE ================= */
+const sendMessage = useCallback(async () => {
+  if (!newMessage.trim() || !currentUser) return;
+
+  const content = newMessage.trim();
+  const tempId = Date.now();
+  const tempMessage = {
+    id: tempId,
+    content,
+    senderId: currentUser.id,
+    sender: { username: currentUser.username },
+    timestamp: new Date().toISOString(),
+    isTemp: true
+  };
+
+  setMessages(prev => [...prev, tempMessage]);
+  setNewMessage('');
+
+  try {
+    const res = await chatService.sendMessage({ content });
+    setMessages(prev =>
+      prev.map(m => (m.id === tempId ? { ...res, id: res.id || tempId } : m))
+    );
+  } catch (error) {
+    console.error('Error sending message:', error);
+    showNotification('Không thể gửi tin nhắn', 'error');
+    setMessages(prev =>
+      prev.map(m => (m.id === tempId ? { ...m, error: true } : m))
+    );
+  }
+}, [newMessage, currentUser, showNotification]);
+
+/* ================= INIT ================= */
+useEffect(() => {
+  const init = async () => {
     try {
-      await authService.logout();
-      if (wsRef.current) {
-        wsRef.current.close();
+      const user = authService.getCurrentUser();
+      const token = authService.getAccessToken();
+
+      if (!user || !token) {
+        navigate('/login');
+        return;
       }
-      navigate('/login');
+
+      setCurrentUser(user);
+      console.log('🔑 User authenticated:', user.username);
+      console.log('🌐 AWS Endpoint:', API_CONFIG.BASE_URL);
+
+      // ✅ Nếu muốn, gọi fetchContacts ở đây
+      await fetchContacts();
+
     } catch (error) {
-      console.error('Logout error:', error);
-    }
-  }, [navigate]);
-
-  const handleKeyDown = useCallback((e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  }, []);
-
-
-  /* ================= API FUNCTIONS ================= */
-  const fetchMessages = useCallback(async () => {
-    try {
-      console.log('📡 Fetching messages from AWS...');
-      const data = await chatService.getMessages();
-      setMessages(data || []);
-      console.log(`✅ Loaded ${data?.length || 0} messages`);
-    } catch (error) {
-      console.error('Error fetching messages:', error);
-      showNotification('Không thể tải tin nhắn từ AWS', 'error');
-    }
-  }, [showNotification]);
-
-  const fetchOnlineUsers = useCallback(async () => {
-    try {
-      console.log('👥 Fetching online users from AWS...');
-      const data = await chatService.getOnlineUsers();
-      setUsers(data || []);
-      console.log(`✅ Loaded ${data?.length || 0} online users`);
-    } catch (error) {
-      console.error('Error fetching users:', error);
-      // Không hiển thị notification để tránh spam
-    }
-  }, []);
-
-  /* ================= WEBSOCKET FUNCTION ================= */
-  const connectWebSocket = useCallback((token) => {
-    try {
-      // Sử dụng WebSocket URL từ AWS
-      const wsUrl = `${API_CONFIG.WS_URL}?token=${encodeURIComponent(token)}`;
-      console.log('🔌 Connecting to AWS WebSocket:', wsUrl);
-      
-      wsRef.current = new WebSocket(wsUrl);
-
-      wsRef.current.onopen = () => {
-        console.log('✅ Connected to AWS WebSocket API Gateway');
-        setWsConnected(true);
-        showNotification('Đã kết nối real-time chat', 'success');
-        
-        // Gửi connection message nếu backend yêu cầu
-        const connectMessage = {
-          action: 'connect',
-          token: token,
-          userId: currentUser?.id
-        };
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify(connectMessage));
-        }
-      };
-
-      wsRef.current.onmessage = (e) => {
-        try {
-          const payload = JSON.parse(e.data);
-          console.log('📨 AWS WebSocket message received:', payload);
-
-          // Xử lý các loại message từ AWS
-          switch (payload.action || payload.type) {
-            case 'NEW_MESSAGE':
-            case 'message':
-              const messageData = payload.data || payload;
-              setMessages(prev => [...prev, messageData]);
-              break;
-
-            case 'USER_JOINED':
-            case 'user-joined':
-              setUsers(prev => [...prev, payload.user || payload.data]);
-              break;
-
-            case 'USER_LEFT':
-            case 'user-left':
-              setUsers(prev => prev.filter(u => u.id !== (payload.userId || payload.data?.userId)));
-              break;
-
-            case 'ERROR':
-            case 'error':
-              console.error('WebSocket error from server:', payload.message);
-              break;
-
-            default:
-              console.log('Unknown WebSocket message type:', payload);
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      };
-
-      wsRef.current.onerror = (error) => {
-        console.error('❌ AWS WebSocket error:', error);
-        setWsConnected(false);
-        showNotification('Lỗi kết nối real-time', 'error');
-      };
-
-      wsRef.current.onclose = (event) => {
-        console.log('🔌 AWS WebSocket disconnected:', event.code, event.reason);
-        setWsConnected(false);
-        
-        // Tự động reconnect sau 5 giây nếu không phải là close bình thường
-        if (event.code !== 1000 && currentUser) {
-          setTimeout(() => {
-            console.log('🔄 Reconnecting WebSocket...');
-            const newToken = authService.getToken();
-            if (newToken) {
-              connectWebSocket(newToken);
-            }
-          }, 5000);
-        }
-      };
-    } catch (error) {
-      console.error('Error setting up WebSocket:', error);
-    }
-  }, [currentUser?.id, showNotification]);
-
-  /* ================= SEND MESSAGE ================= */
-  const sendMessage = useCallback(async () => {
-    if (!newMessage.trim() || !currentUser) return;
-
-    const content = newMessage.trim();
-    const tempId = Date.now(); // Temporary ID for optimistic update
-    const tempMessage = {
-      id: tempId,
-      content,
-      senderId: currentUser.id,
-      sender: { username: currentUser.username },
-      timestamp: new Date().toISOString(),
-      isTemp: true
-    };
-
-    // Optimistic update
-    setMessages(prev => [...prev, tempMessage]);
-    setNewMessage('');
-
-    try {
-      if (wsRef.current?.readyState === WebSocket.OPEN && wsConnected) {
-        // Gửi qua WebSocket
-        wsRef.current.send(JSON.stringify({
-          action: 'sendmessage',
-          data: { content },
-          timestamp: new Date().toISOString()
-        }));
-        
-        // Xóa message tạm sau khi gửi thành công
-        setTimeout(() => {
-          setMessages(prev => prev.filter(m => m.id !== tempId));
-        }, 1000);
-      } else {
-        // Fallback: Gửi qua HTTP API
-        console.log('WebSocket not connected, using HTTP API fallback');
-        const res = await chatService.sendMessage({ content });
-        
-        // Thay thế message tạm bằng message thật từ server
-        setMessages(prev => prev.map(m => 
-          m.id === tempId ? { ...res, id: res.id || tempId } : m
-        ));
+      console.error('Initialization error:', error);
+      if (error.status === 401) {
+        authService.clearAuthData();
+        navigate('/login');
+      } else if (
+        error.message.includes('Network Error') ||
+        error.message.includes('CORS')
+      ) {
+        showNotification(
+          'Không thể kết nối đến AWS. Kiểm tra CORS configuration.',
+          'error'
+        );
       }
-    } catch (error) {
-      console.error('Error sending message:', error);
-      showNotification('Không thể gửi tin nhắn', 'error');
-      
-      // Đánh dấu message tạm là lỗi
-      setMessages(prev => prev.map(m => 
-        m.id === tempId ? { ...m, error: true } : m
-      ));
+    } finally {
+      setLoading(false);
     }
-  }, [newMessage, currentUser, wsConnected, showNotification]);
+  };
 
-  /* ================= INIT ================= */
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const user = authService.getCurrentUser();
-        const token = authService.getToken();
+  init();
+}, [navigate, fetchContacts, showNotification]);
 
-        if (!user || !token) {
-          navigate('/login');
-          return;
-        }
 
-        setCurrentUser(user);
-        console.log('🔑 User authenticated:', user.username);
-        console.log('🌐 AWS Endpoint:', API_CONFIG.BASE_URL);
-        
-        await fetchMessages();
-        await fetchOnlineUsers();
-        connectWebSocket(token);
-      } catch (error) {
-        console.error('Initialization error:', error);
-        if (error.status === 401) {
-          authService.clearAuthData();
-          navigate('/login');
-        } else if (error.message.includes('Network Error') || error.message.includes('CORS')) {
-          showNotification('Không thể kết nối đến AWS. Kiểm tra CORS configuration.', 'error');
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    init();
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        console.log('🔌 WebSocket disconnected');
-      }
-    };
-  }, [navigate, fetchMessages, fetchOnlineUsers, connectWebSocket, showNotification]);
 
   /* ================= EFFECTS ================= */
   useEffect(() => {
@@ -401,7 +287,7 @@ const ChatPage = () => {
 
         <Box p={2} borderTop={1}>
           <Typography variant="body2" color="text.secondary" gutterBottom>
-            Đang đăng nhập: {currentUser?.username}
+            Đang đăng nhập {currentUser?.username}
           </Typography>
           <Button 
             fullWidth 

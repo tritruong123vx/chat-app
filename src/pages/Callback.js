@@ -7,8 +7,7 @@ function Callback() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Lấy token trực tiếp từ URL hash sau khi Cognito redirect
-    const hash = window.location.hash.substring(1); // bỏ dấu #
+    const hash = window.location.hash.substring(1);
     const params = new URLSearchParams(hash);
 
     const idToken = params.get('id_token');
@@ -22,11 +21,10 @@ function Callback() {
       return;
     }
 
-    // Lưu vào localStorage để dùng cho WebSocket/API
+    // ✅ Lưu token đúng key
     localStorage.setItem(STORAGE_KEYS.TOKEN, accessToken);
-    localStorage.setItem(STORAGE_KEYS.USER, idToken);
+    localStorage.setItem("id_token", idToken);
 
-    // Chuyển sang trang chat
     navigate('/chat', { replace: true });
   }, [navigate]);
 
